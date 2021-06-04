@@ -1,0 +1,26 @@
+Layout/LineLength:
+  Max: 140
+Metrics/MethodLength:
+  Max: 50
+Metrics/ClassLength:
+  Max: 1500
+Metrics/BlockLength:
+  Max: 50
+Metrics/CyclomaticComplexity:
+  Max: 14
+Metrics/AbcSize:
+  Max: 17
+Metrics/PerceivedComplexity:
+  Max: 16
+Naming/MethodParameterName:
+  Enabled: false
+Style/Documentation:
+  Enabled: false
+AllCops:
+  TargetRubyVersion: 2.6
+  NewCops: enable
+  SuggestExtensions: false
+Style/FrozenStringLiteralComment:
+  Enabled: false
+Gemspec/RequiredRubyVersion:
+  Enabled: false
