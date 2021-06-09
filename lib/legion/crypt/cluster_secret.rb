@@ -40,6 +40,8 @@ module Legion
       alias cluster_secret from_settings
 
       def from_transport # rubocop:disable Metrics/AbcSize
+        return nil unless Legion::Settings[:transport][:connected]
+
         require 'legion/transport/messages/request_cluster_secret'
         Legion::Logging.info 'Requesting cluster secret via public key'
         Legion::Logging.warn 'cluster_secret already set but we are requesting a new value' unless from_settings.nil?

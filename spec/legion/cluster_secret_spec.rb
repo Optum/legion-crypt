@@ -35,7 +35,7 @@ RSpec.describe Legion::Crypt::ClusterSecret do
   end
 
   it '.only_member?' do
-    expect(@cs.only_member?).to eq true
+    expect(@cs.only_member?).to eq nil
   end
 
   it '.push_cs_to_vault' do
