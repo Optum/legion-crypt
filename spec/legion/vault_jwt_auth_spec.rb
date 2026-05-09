@@ -151,7 +151,6 @@ RSpec.describe Legion::Crypt::VaultJwtAuth do
   describe '.login!' do
     before do
       allow(Vault).to receive(:token=)
-      allow(Legion::Logging).to receive(:info)
     end
 
     it 'calls login and returns the same result' do
@@ -167,9 +166,9 @@ RSpec.describe Legion::Crypt::VaultJwtAuth do
       described_class.login!(jwt: sample_jwt)
     end
 
-    it 'logs the authenticated policies' do
-      expect(Legion::Logging).to receive(:info).with(/authenticated via JWT auth.*default,legion-worker/)
-
+    it 'calls log.info with the authenticated policies' do
+      allow(described_class.log).to receive(:info)
+      expect(described_class.log).to receive(:info).with(match(/authenticated via JWT auth.*default,legion-worker/))
       described_class.login!(jwt: sample_jwt)
     end
 
