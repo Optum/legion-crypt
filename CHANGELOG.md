@@ -1,6 +1,12 @@
 # Legion::Crypt
 
-## [Unreleased]
+## [1.5.13] - 2026-05-09
+
+### Removed
+- Logging compat shims (`lib/legion/logging.rb` and `lib/legion/logging/helper.rb`) that redefined `Legion::Logging::Helper#log` with a `CompatLogger`, preventing TaggedLogger segment tags from rendering in log output for all modules loaded after crypt
+
+### Added
+- `legion-json` gemspec dependency (was used but undeclared)
 
 ## [1.5.12] - 2026-04-27
 
