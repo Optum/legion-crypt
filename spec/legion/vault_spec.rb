@@ -32,35 +32,9 @@ RSpec.describe Legion::Crypt::Vault do
       expect(@vault.connect_vault).to eq false
     end
 
-    it 'logs via log_exception when available' do
-      logging = double('Legion::Logging')
-      stub_const('Legion::Logging', logging)
-      allow(logging).to receive(:respond_to?).and_return(false)
-      allow(logging).to receive(:respond_to?).with(:info).and_return(true)
-      allow(logging).to receive(:respond_to?).with(:log_exception).and_return(true)
-      allow(logging).to receive(:info)
-      expect(logging).to receive(:log_exception).with(instance_of(StandardError), level: :error, lex: 'crypt', component_type: :helper)
+    it 'logs the exception via handle_exception' do
+      expect(@vault).to receive(:handle_exception).with(instance_of(StandardError), hash_including(level: :error))
       @vault.connect_vault
-    end
-
-    it 'falls back to Logging.error with backtrace when log_exception unavailable' do
-      logging = double('Legion::Logging')
-      stub_const('Legion::Logging', logging)
-      allow(logging).to receive(:respond_to?).and_return(false)
-      allow(logging).to receive(:respond_to?).with(:info).and_return(true)
-      allow(logging).to receive(:respond_to?).with(:log_exception).and_return(false)
-      allow(logging).to receive(:respond_to?).with(:error).and_return(true)
-      allow(logging).to receive(:info)
-      expect(logging).to receive(:error).with(match(/connection refused/))
-      @vault.connect_vault
-    end
-
-    it 'does not raise and returns false when Legion::Logging is absent' do
-      hide_const('Legion::Logging')
-      allow(Kernel).to receive(:warn)
-      result = nil
-      expect { result = @vault.connect_vault }.not_to raise_error
-      expect(result).to eq false
     end
   end
 

@@ -19,7 +19,7 @@ RSpec.describe Legion::Crypt::Spiffe::SvidRotation do
   let(:mock_client) { instance_double(Legion::Crypt::Spiffe::WorkloadApiClient, fetch_x509_svid: mock_svid) }
 
   before do
-    stub_const('Legion::Settings', Module.new)
+    allow(Legion::Settings).to receive(:[]).and_call_original
     allow(Legion::Settings).to receive(:[]).with(:security).and_return(
       { spiffe: { enabled: true, socket_path: '/tmp/fake.sock', trust_domain: 'test.local' } }
     )

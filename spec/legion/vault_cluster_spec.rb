@@ -301,9 +301,7 @@ RSpec.describe Legion::Crypt::VaultCluster do
       it 'sets Legion::Settings[:crypt][:vault][:connected] in multi-cluster mode' do
         vault_hash = { connected: false }
         crypt_hash = { vault: vault_hash }
-        stub_const('Legion::Settings', Module.new do
-          define_singleton_method(:[]) { |_k| crypt_hash }
-        end)
+        allow(Legion::Settings).to receive(:[]).and_call_original
         allow(Legion::Settings).to receive(:[]).with(:crypt).and_return(crypt_hash)
 
         test_object.connect_all_clusters
