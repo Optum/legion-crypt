@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 require 'legion/crypt/cluster_secret'
@@ -7,11 +9,16 @@ RSpec.describe Legion::Crypt::ClusterSecret do
     @cs = Class.new
     @cs.extend Legion::Crypt::ClusterSecret
 
-    @vault_mock = Module.new do
-      def self.get(_)
-        { cluster_secret: SecureRandom.hex(32) }
-      end
-    end
+    @original_cluster_secret = Legion::Settings[:crypt][:cluster_secret]
+    @original_cs_encrypt_ready = Legion::Settings[:crypt][:cs_encrypt_ready]
+    @original_vault_settings = Legion::Settings[:crypt][:vault].dup
+  end
+
+  after do
+    Legion::Settings[:crypt][:cluster_secret] = @original_cluster_secret
+    Legion::Settings[:crypt][:cs_encrypt_ready] = @original_cs_encrypt_ready
+    Legion::Settings[:crypt][:vault].replace(@original_vault_settings)
+    @cs.remove_instance_variable(:@cs) if @cs.instance_variable_defined?(:@cs)
   end
 
   it '.find_cluster_secret' do
@@ -27,11 +34,11 @@ RSpec.describe Legion::Crypt::ClusterSecret do
   # end
 
   it '.force_cluster_secret' do
-    expect(@cs.force_cluster_secret).to eq true
+    expect(@cs.force_cluster_secret).to eq false
   end
 
   it '.settings_push_vault' do
-    expect(@cs.settings_push_vault).to eq true
+    expect(@cs.settings_push_vault).to eq false
   end
 
   it '.only_member?' do
@@ -40,6 +47,101 @@ RSpec.describe Legion::Crypt::ClusterSecret do
 
   it '.push_cs_to_vault' do
     expect(@cs.push_cs_to_vault).to eq false
+  end
+
+  describe '#push_cs_to_vault rescue paths' do
+    before do
+      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).and_call_original
+      allow(Legion::Settings[:crypt][:vault]).to receive(:[]).with(:connected).and_return(true)
+      allow(Legion::Settings[:crypt]).to receive(:[]).and_call_original
+      allow(Legion::Settings[:crypt]).to receive(:[]).with(:cluster_secret).and_return('aabbccdd')
+      allow(Legion::Crypt).to receive(:write).and_raise(StandardError, 'permission denied')
+    end
+
+    it 'returns false when Vault write raises' do
+      expect(@cs.push_cs_to_vault).to eq false
+    end
+
+    it 'does not propagate the exception' do
+      expect { @cs.push_cs_to_vault }.not_to raise_error
+    end
+
+    it 'logs via handle_exception' do
+      expect(@cs).to receive(:handle_exception).with(instance_of(StandardError), hash_including(level: :warn))
+      @cs.push_cs_to_vault
+    end
+  end
+
+  describe '#set_cluster_secret' do
+    let(:valid_secret) { SecureRandom.hex(32) }
+
+    before do
+      Legion::Settings[:crypt][:vault][:connected] = true
+      Legion::Settings[:crypt][:vault][:push_cluster_secret] = true
+    end
+
+    it 'pushes the newly assigned secret instead of the previous settings value' do
+      previous_secret = SecureRandom.hex(32)
+      Legion::Settings[:crypt][:cluster_secret] = previous_secret
+      allow(Legion::Crypt).to receive(:write)
+
+      @cs.set_cluster_secret(valid_secret, true)
+
+      expect(Legion::Crypt).to have_received(:write).with('crypt', cluster_secret: valid_secret)
+      expect(Legion::Settings[:crypt][:cluster_secret]).to eq valid_secret
+    end
+
+    context 'when push_cs_to_vault rescues internally' do
+      before do
+        allow(@cs).to receive(:push_cs_to_vault).and_return(false)
+      end
+
+      it 'stores cluster_secret in Settings' do
+        @cs.set_cluster_secret(valid_secret, true)
+        expect(Legion::Settings[:crypt][:cluster_secret]).to eq valid_secret
+      end
+
+      it 'sets cs_encrypt_ready to true' do
+        @cs.set_cluster_secret(valid_secret, true)
+        expect(Legion::Settings[:crypt][:cs_encrypt_ready]).to eq true
+      end
+    end
+  end
+
+  describe 'Vault round trip' do
+    let(:vault_store) { {} }
+    let(:initial_secret) { SecureRandom.hex(32) }
+    let(:rotated_secret) { SecureRandom.hex(32) }
+
+    before do
+      Legion::Settings[:crypt][:vault][:connected] = true
+      Legion::Settings[:crypt][:vault][:read_cluster_secret] = true
+      Legion::Settings[:crypt][:vault][:push_cluster_secret] = true
+
+      allow(Legion::Crypt).to receive(:write) do |path, **data|
+        vault_store[path] = data
+      end
+      allow(Legion::Crypt).to receive(:exist?) do |path|
+        vault_store.key?(path)
+      end
+      allow(Legion::Crypt).to receive(:get) do |path|
+        vault_store[path]
+      end
+    end
+
+    it 'round trips the cluster secret through Vault and refreshes the derived digest' do
+      @cs.set_cluster_secret(initial_secret, true)
+      initial_digest = @cs.cs
+
+      Legion::Settings[:crypt][:cluster_secret] = nil
+      expect(@cs.from_vault).to eq initial_secret
+      expect(vault_store['crypt']).to eq(cluster_secret: initial_secret)
+
+      @cs.set_cluster_secret(rotated_secret, false)
+
+      expect(@cs.cs).to eq(Digest::SHA256.digest(rotated_secret))
+      expect(@cs.cs).not_to eq(initial_digest)
+    end
   end
 
   it '.cluster_secret_timeout' do
@@ -67,5 +169,38 @@ RSpec.describe Legion::Crypt::ClusterSecret do
 
   it 'can do magic things with vault(fake)' do
     expect(@cs.from_vault).to be_nil
+  end
+
+  describe '#from_transport rescue paths' do
+    before do
+      # Simulate transport connected but require itself raising an error
+      allow(Legion::Settings[:transport]).to receive(:[]).and_call_original
+      allow(Legion::Settings[:transport]).to receive(:[]).with(:connected).and_return(true)
+      allow(@cs).to receive(:require).and_raise(StandardError, 'transport error')
+    end
+
+    it 'returns nil when an exception is raised' do
+      expect(@cs.from_transport).to be_nil
+    end
+
+    it 'logs via handle_exception' do
+      expect(@cs).to receive(:handle_exception).with(instance_of(StandardError), hash_including(level: :error))
+      @cs.from_transport
+    end
+  end
+
+  describe '#cs rescue paths' do
+    before do
+      allow(@cs).to receive(:find_cluster_secret).and_raise(StandardError, 'digest error')
+    end
+
+    it 'returns nil when find_cluster_secret raises' do
+      expect(@cs.cs).to be_nil
+    end
+
+    it 'logs via handle_exception' do
+      expect(@cs).to receive(:handle_exception).with(instance_of(StandardError), hash_including(level: :error))
+      @cs.cs
+    end
   end
 end

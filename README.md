@@ -1,25 +1,22 @@
-Legion::Crypt
-=====
+# legion-crypt
 
-Legion::Crypt is the class responsible for encryption, managing secrets and connecting with Vault
+Encryption, secrets management, JWT token management, and HashiCorp Vault integration for the [LegionIO](https://github.com/LegionIO/LegionIO) framework. Provides AES-256-CBC message encryption, RSA key pair generation, cluster secret management, JWT issue/verify operations, Vault token lifecycle management, and multi-cluster Vault connectivity.
 
-Supported Ruby versions and implementations
-------------------------------------------------
+**Version**: 1.5.6
 
-Legion::Crypt should work identically on:
-
-* JRuby 9.2+
-* Ruby 2.4+
-
-
-Installation and Usage
-------------------------
-
-You can verify your installation using this piece of code:
+## Installation
 
 ```bash
 gem install legion-crypt
 ```
+
+Or add to your Gemfile:
+
+```ruby
+gem 'legion-crypt'
+```
+
+## Usage
 
 ```ruby
 require 'legion/crypt'
@@ -29,8 +26,43 @@ Legion::Crypt.encrypt('this is my string')
 Legion::Crypt.decrypt(message)
 ```
 
-Settings
-----------
+### JWT Tokens
+
+```ruby
+# Issue a token (defaults to HS256 using cluster secret)
+token = Legion::Crypt.issue_token({ node_id: 'abc' }, ttl: 3600)
+
+# Verify and decode a token
+claims = Legion::Crypt.verify_token(token)
+
+# Use RS256 (RSA keypair) instead
+token = Legion::Crypt.issue_token({ node_id: 'abc' }, algorithm: 'RS256')
+claims = Legion::Crypt.verify_token(token, algorithm: 'RS256')
+
+# Inspect a token without verification
+decoded = Legion::Crypt::JWT.decode(token)
+```
+
+### External Token Verification (JWKS)
+
+Verify tokens from external identity providers (Entra ID, Bot Framework) using their public JWKS endpoints:
+
+```ruby
+# Verify an Entra ID OIDC token
+claims = Legion::Crypt.verify_external_token(
+  token,
+  jwks_url: 'https://login.microsoftonline.com/TENANT/discovery/v2.0/keys',
+  issuers:  ['https://login.microsoftonline.com/TENANT/v2.0'],
+  audience: 'app-client-id'
+)
+
+# Or use the JWT module directly
+claims = Legion::Crypt::JWT.verify_with_jwks(token, jwks_url: jwks_url)
+```
+
+Public keys are cached for 1 hour and automatically re-fetched on cache miss (handles key rotation).
+
+## Configuration
 
 ```json
 {
@@ -40,17 +72,160 @@ Settings
     "address": "localhost",
     "port": 8200,
     "token": null,
-    "connected": false
+    "connected": false,
+    "renewer_time": 5,
+    "renewer": true,
+    "push_cluster_secret": true,
+    "read_cluster_secret": true,
+    "kv_path": "legion",
+    "leases": {}
+  },
+  "jwt": {
+    "enabled": true,
+    "default_algorithm": "HS256",
+    "default_ttl": 3600,
+    "issuer": "legion",
+    "verify_expiration": true,
+    "verify_issuer": true
   },
   "cs_encrypt_ready": false,
   "dynamic_keys": true,
   "cluster_secret": null,
-  "save_private_key": false,
-  "read_private_key": false
+  "save_private_key": true,
+  "read_private_key": true
 }
 ```
 
-Authors
-----------
+### JWT Algorithms
 
-* [Matthew Iverson](https://github.com/Esity) - current maintainer
+| Algorithm | Key | Use Case |
+|-----------|-----|----------|
+| `HS256` (default) | Cluster secret (symmetric) | Intra-cluster tokens — all nodes can issue and verify |
+| `RS256` | RSA key pair (asymmetric) | Tokens verifiable by external services without sharing the signing key |
+
+### Vault Integration
+
+When `vault.token` is set (or via `VAULT_TOKEN_ID` env var), Crypt connects to Vault on `start`. The background `VaultRenewer` thread keeps the token alive. Vault is an optional runtime dependency — the Vault module is only included if the `vault` gem is available.
+
+### Dynamic Vault Leases
+
+The `LeaseManager` handles dynamic secrets from any Vault secrets engine (database, RabbitMQ, AWS, PKI, etc.). Define named leases in crypt settings — each lease maps a stable name to a Vault path:
+
+```json
+{
+  "crypt": {
+    "vault": {
+      "leases": {
+        "rabbitmq": { "path": "rabbitmq/creds/legion-role" },
+        "bedrock":  { "path": "aws/creds/bedrock-role" },
+        "postgres": { "path": "database/creds/apollo-rw" }
+      }
+    }
+  }
+}
+```
+
+Other settings files reference lease data using `lease://name#key`:
+
+```json
+{
+  "transport": {
+    "connection": {
+      "username": "lease://rabbitmq#username",
+      "password": "lease://rabbitmq#password"
+    }
+  }
+}
+```
+
+Both `username` and `password` come from a single Vault read — one lease, one credential pair. The `LeaseManager`:
+
+- Fetches all leases at boot (during `Crypt.start`, before `resolve_secrets!`)
+- Caches response data and lease metadata
+- Renews leases in the background at 50% TTL
+- Detects credential rotation and pushes new values into `Legion::Settings` in-place
+- Revokes all leases on `Crypt.shutdown`
+
+Lease names are stable across environments. The actual Vault paths are deployment-specific config.
+
+## Multi-Cluster Vault
+
+`VaultCluster` supports connecting to multiple Vault clusters simultaneously. Each cluster has its own `::Vault::Client` instance.
+
+```json
+{
+  "crypt": {
+    "vault": {
+      "default": "primary",
+      "clusters": {
+        "primary": {
+          "protocol": "https",
+          "address": "vault.example.com",
+          "port": 8200,
+          "namespace": "my-namespace",
+          "auth_method": "ldap"
+        },
+        "secondary": {
+          "protocol": "https",
+          "address": "vault2.example.com",
+          "port": 8200,
+          "auth_method": "ldap"
+        }
+      }
+    }
+  }
+}
+```
+
+```ruby
+# Authenticate to all LDAP-configured clusters at once
+Legion::Crypt.ldap_login_all(username: 'user', password: 'pass')
+
+# Read from specific cluster
+Legion::Crypt.read('secret/data/mykey', cluster: :secondary)
+
+# Get a Vault client for a specific cluster
+client = Legion::Crypt.vault_client(:primary)
+```
+
+When `clusters` is empty, the legacy single-cluster path is used (backward compatible).
+
+## Kerberos Authentication
+
+When `crypt.vault.auth_method` is set to `kerberos`, `Crypt.start` performs Kerberos auto-auth to Vault using `KerberosAuth`:
+
+```ruby
+# Settings
+{
+  "crypt": {
+    "vault": {
+      "auth_method": "kerberos",
+      "kerberos": {
+        "service_principal": "HTTP/vault.example.com@REALM",
+        "auth_path": "auth/kerberos/login"
+      }
+    }
+  }
+}
+```
+
+The SPNEGO token is sent as an HTTP `Authorization` header (not JSON body). The Vault namespace is cleared before auth (Kerberos mount is at root) and restored after. Requires Homebrew MIT Kerberos (`brew install krb5`) on macOS — the system Heimdal library is not compatible.
+
+`TokenRenewer` keeps the Vault token alive: renews at 75% TTL, re-auths via Kerberos if renewal fails, uses exponential backoff.
+
+## mTLS
+
+`Crypt::Mtls` issues mTLS certificates from Vault PKI. `Crypt::CertRotation` runs a background thread renewing certs at 50% TTL. `Transport::Connection::Vault` applies tempfile-based Bunny mTLS. Feature-flagged via `security.mtls.enabled: false`.
+
+## Requirements
+
+- Ruby >= 3.4
+- `ed25519` (~> 1.3)
+- `jwt` gem (>= 2.7)
+- `vault` gem (>= 0.17, optional)
+- HashiCorp Vault (optional, for secrets management)
+- `gssapi` gem (optional, required for Kerberos auth)
+
+## License
+
+Apache-2.0
